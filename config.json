@@ -1,0 +1,11 @@
+{
+    "backupDir": "",
+    "mobileScreenWidth": 600,
+    "showStats": true,
+    "defaultDeck": "Alle Stapel",
+    "heatmapColors": {
+        "notStudied": "#e0e0e0",
+        "fullyStudied": "#8dcf82",
+        "partiallyStudied": "#f28b82"
+    }
+}

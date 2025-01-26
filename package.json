@@ -1,0 +1,12 @@
+{
+    "name": "study_tracker",
+    "version": "1.0.0",
+    "display": "Study Tracker",
+    "author": "Lucas Grünhoff",
+    "description": "Ein Study Tracker Add-on für Anki mit Lernfortschritt, Statistiken und Heatmap.",
+    "license": "GPL-3.0",
+    "manifest_version": 2,
+    "requires": {
+        "anki": ">=2.1.0"
+    }
+}

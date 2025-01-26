@@ -1,0 +1,8 @@
+{
+    "name": "Study Tracker",
+    "package": "study_tracker",
+    "version": "1.0.0",
+    "conflicts": [],
+    "min_point_version": 23,
+    "max_point_version": 49
+}
