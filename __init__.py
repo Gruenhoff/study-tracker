@@ -14,6 +14,24 @@ import json  # Am Anfang der Datei bei den anderen Imports
 import html
 import hashlib
 import traceback
+import urllib.request
+import json
+
+GITHUB_REPO = "Gruenhoff/study-tracker"
+VERSION = "1.0.0"
+
+def check_updates():
+   try:
+       url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+       response = urllib.request.urlopen(url)
+       data = json.loads(response.read())
+       latest_version = data["tag_name"].strip("v")
+       
+       if latest_version > VERSION:
+           showInfo(f"Neue Version {latest_version} verfügbar!\n"
+                   f"Download: github.com/{GITHUB_REPO}/releases")
+   except:
+       pass
 
 # Qt6 Imports explizit definieren
 QDockWidget = QDockWidget
@@ -1921,6 +1939,8 @@ def delayed_setup():
         print(f"Study Tracker: Setup error: {e}")
         traceback.print_exc()
         QTimer.singleShot(1000, delayed_setup)
+    
+    check_updates()
 
 def on_review():
     """Hook für die Aktualisierung nach einer Kartenwiederholung"""
