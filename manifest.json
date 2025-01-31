@@ -4,5 +4,11 @@
     "version": "1.0.0",
     "conflicts": [],
     "min_point_version": 23,
-    "max_point_version": 49
+    "max_point_version": 49,
+    "updates": {
+        "windows": {
+            "1.0.0": "https://github.com/Gruenhoff/study-tracker/releases/download/v1.0.0/study-tracker.ankiaddon",
+            "_latest": "1.0.0"
+        }
+    }
 }
