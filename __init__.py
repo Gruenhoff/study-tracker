@@ -1297,7 +1297,240 @@ class Database:
             print(f"Study Tracker: Fehler bei der Bereinigung doppelter Level-Einträge: {e}")
             traceback.print_exc()
             return 0
-    
+
+    def update_card_deck(self, card_id, new_deck_id):
+        """
+        Aktualisiert die Deck-ID einer Karte in allen relevanten Tabellen.
+        Optimiert für wöchentliche Verschiebungen einzelner Karten.
+        
+        Args:
+            card_id: ID der Karte
+            new_deck_id: Neue Deck-ID
+        """
+        try:
+            card_id_str = str(card_id)
+            
+            # Hole aktuelle Deck-ID aus der Datenbank
+            cursor = self.conn.execute("""
+                SELECT deck_id FROM validation_codes WHERE card_id = ?
+                UNION
+                SELECT deck_id FROM chat_links WHERE card_id = ?
+                UNION
+                SELECT deck_id FROM studied_cards WHERE card_id = ?
+                LIMIT 1
+            """, (card_id_str, card_id_str, card_id_str))
+            
+            current_deck_id = None
+            result = cursor.fetchone()
+            if result:
+                current_deck_id = result[0]
+            
+            # Überprüfe, ob sich die Deck-ID tatsächlich geändert hat
+            if current_deck_id is not None and current_deck_id == new_deck_id:
+                return True  # Keine Änderung notwendig
+                
+            # Aktualisiere Validierungscodes
+            with self.conn:
+                # Validierungscodes aktualisieren
+                updated_validation = self.conn.execute("""
+                    UPDATE validation_codes
+                    SET deck_id = ?
+                    WHERE card_id = ?
+                """, (new_deck_id, card_id_str)).rowcount
+                
+                # ChatGPT-Links aktualisieren
+                updated_links = self.conn.execute("""
+                    UPDATE chat_links
+                    SET deck_id = ?
+                    WHERE card_id = ?
+                """, (new_deck_id, card_id_str)).rowcount
+                
+                # Gelernte Karten aktualisieren
+                updated_studied = self.conn.execute("""
+                    UPDATE studied_cards
+                    SET deck_id = ?
+                    WHERE card_id = ?
+                """, (new_deck_id, card_id_str)).rowcount
+            
+            print(f"Study Tracker: Karte {card_id_str} wurde verschoben: {current_deck_id} -> {new_deck_id}")
+            print(f"Aktualisiert: {updated_validation} Validierungscodes, {updated_links} ChatGPT-Links, {updated_studied} Lerneinträge")
+            return True
+        except Exception as e:
+            print(f"Study Tracker: Fehler beim Aktualisieren der Deck-ID: {e}")
+            traceback.print_exc()
+            return False
+
+    def efficient_card_tracking(self):
+        """
+        Effiziente Methode zum Tracking verschobener Karten.
+        Optimiert für die regelmäßige Verschiebung weniger Karten.
+        Wird vor der Berichterstellung aufgerufen, um sicherzustellen, 
+        dass die Deck-Zuordnungen korrekt sind.
+        """
+        if not mw or not mw.col:
+            print("Study Tracker: Anki-Sammlung nicht verfügbar")
+            return False
+            
+        try:
+            print("Study Tracker: Starte effizientes Karten-Tracking")
+            
+            # Priorisiere kürzlich gelernte Karten für das Tracking
+            cursor = self.conn.execute("""
+                SELECT DISTINCT card_id FROM studied_cards 
+                WHERE date >= date('now', '-90 days')
+                LIMIT 100
+            """)
+            
+            recent_card_ids = [row[0] for row in cursor.fetchall()]
+            
+            # Füge wichtige Karten mit Validierungscodes hinzu
+            cursor = self.conn.execute("""
+                SELECT DISTINCT card_id FROM validation_codes
+                LIMIT 100
+            """)
+            
+            validation_card_ids = [row[0] for row in cursor.fetchall()]
+            
+            # Kombiniere die Listen und entferne Duplikate
+            all_card_ids = list(set(recent_card_ids + validation_card_ids))
+            
+            print(f"Study Tracker: Überprüfe {len(all_card_ids)} wichtige Karten")
+            
+            # Verfolge jede Karte in Anki
+            updated_count = 0
+            for card_id in all_card_ids:
+                try:
+                    card = mw.col.get_card(int(card_id))
+                    if card:
+                        # Aktualisiere Deck-ID in der Datenbank
+                        if self.update_card_deck(card_id, card.did):
+                            updated_count += 1
+                            
+                        # Hole den aktuellen Kartentitel und aktualisiere ihn in der Datenbank
+                        note = card.note()
+                        title = None
+                        
+                        # Versuche Vorderseite oder ähnliche Felder
+                        for field in ['Vorderseite', 'Front', 'Question', 'Frage']:
+                            if field in note:
+                                title = note[field]
+                                break
+                        
+                        # Fallback: Erstes Feld
+                        if not title and note.keys():
+                            title = note[note.keys()[0]]
+                        
+                        if title:
+                            # Bereinige und kürze den Titel
+                            title = clean_html(title)
+                            if len(title) > 50:
+                                title = title[:47] + "..."
+                            
+                            # Aktualisiere den Titel in der Datenbank
+                            with self.conn:
+                                self.conn.execute("""
+                                    UPDATE validation_codes
+                                    SET card_title = ?
+                                    WHERE card_id = ?
+                                """, (title, card_id))
+                                
+                                self.conn.execute("""
+                                    UPDATE chat_links
+                                    SET card_title = ?
+                                    WHERE card_id = ?
+                                """, (title, card_id))
+                except Exception as e:
+                    print(f"Study Tracker: Fehler beim Tracking der Karte {card_id}: {e}")
+                    continue
+            
+            print(f"Study Tracker: {updated_count} Karten wurden synchronisiert")
+            return updated_count > 0
+        except Exception as e:
+            print(f"Study Tracker: Fehler beim Karten-Tracking: {e}")
+            traceback.print_exc()
+            return False
+
+    def update_all_validation_code_links(self):
+        """
+        Aktualisiert die Verknüpfung zwischen Validierungscodes und ChatGPT-Links.
+        Besonders wichtig für verschobene Karten.
+        """
+        try:
+            print("Study Tracker: Aktualisiere Verknüpfungen zwischen Validierungscodes und ChatGPT-Links")
+            
+            # Hole alle ChatGPT-Links
+            cursor = self.conn.execute("""
+                SELECT card_id, link FROM chat_links
+                WHERE link IS NOT NULL AND link != ''
+            """)
+            
+            link_updates = 0
+            for card_id, link in cursor.fetchall():
+                # Aktualisiere Validierungscodes mit dem Link
+                updated = self.conn.execute("""
+                    UPDATE validation_codes
+                    SET chat_link = ?
+                    WHERE card_id = ? AND (chat_link IS NULL OR chat_link = '')
+                """, (link, card_id)).rowcount
+                
+                if updated > 0:
+                    link_updates += updated
+            
+            print(f"Study Tracker: {link_updates} Validierungscodes mit ChatGPT-Links verknüpft")
+            return link_updates > 0
+        except Exception as e:
+            print(f"Study Tracker: Fehler bei der Link-Aktualisierung: {e}")
+            traceback.print_exc()
+            return False
+
+    def prepare_for_report(self, deck_id, start_date, end_date):
+        """
+        Bereitet die Datenbank für die Berichterstellung vor.
+        Diese Methode sorgt dafür, dass die Berichtsdaten korrekt sind.
+        
+        Args:
+            deck_id: ID des Decks für den Bericht
+            start_date: Startdatum im Format YYYY-MM-DD
+            end_date: Enddatum im Format YYYY-MM-DD
+        """
+        try:
+            print(f"Study Tracker: Bereite Daten für Bericht vor (Deck {deck_id}, {start_date} bis {end_date})")
+            
+            # 1. Tracking verschobener Karten
+            self.efficient_card_tracking()
+            
+            # 2. Aktualisiere ChatGPT-Links für Validierungscodes
+            self.update_all_validation_code_links()
+            
+            # 3. Vereinheitliche Kartentitel zwischen validation_codes und chat_links
+            self.conn.execute("""
+                UPDATE validation_codes AS v
+                SET card_title = (
+                    SELECT c.card_title FROM chat_links AS c
+                    WHERE c.card_id = v.card_id AND c.card_title IS NOT NULL AND c.card_title != ''
+                    LIMIT 1
+                )
+                WHERE EXISTS (
+                    SELECT 1 FROM chat_links AS c
+                    WHERE c.card_id = v.card_id AND c.card_title IS NOT NULL AND c.card_title != ''
+                )
+                AND (v.card_title IS NULL OR v.card_title = '' OR v.card_title LIKE 'Karte %')
+            """)
+            
+            # 4. Aktualisiere fehlende Deck-IDs für den gewählten Zeitraum
+            self.conn.execute("""
+                UPDATE validation_codes
+                SET deck_id = ?
+                WHERE deck_id IS NULL AND date BETWEEN ? AND ?
+            """, (deck_id, start_date, end_date))
+            
+            self.conn.commit()
+            print("Study Tracker: Berichtsvorbereitung abgeschlossen")
+            return True
+        except Exception as e:
+            print(f"Study Tracker: Fehler bei der Berichtsvorbereitung: {e}")
+            traceback.print_exc()
+            return False  
 
 class LevelSystem:
     """Implementierung des Levelsystems basierend auf 7-Tage-Abschnitten"""
@@ -1525,7 +1758,7 @@ class ValidationCodeHandler:
         )
     
     def get_card_title(self, card_id):
-        """Verbesserte Methode zum Ermitteln des Kartentitels mit besseren Fallbacks"""
+        """Verbesserte Methode zum Ermitteln des Kartentitels mit besseren Fallbacks für verschobene Karten"""
         if not card_id:
             return "Unbekannte Karte"
                 
@@ -1538,7 +1771,9 @@ class ValidationCodeHandler:
             """, (str(card_id),))
             result = cursor.fetchone()
             if result and result[0] and len(result[0]) > 3:
-                return result[0]
+                # Prüfe, ob der Titel wie eine ID aussieht (nur Zahlen)
+                if not result[0].startswith("Karte ") and not result[0].isdigit():
+                    return result[0]
             
             # 2. Versuche einen Titel aus der chat_links-Tabelle
             cursor = self.db.conn.execute("""
@@ -1548,7 +1783,9 @@ class ValidationCodeHandler:
             """, (str(card_id),))
             result = cursor.fetchone()
             if result and result[0] and len(result[0]) > 3:
-                return result[0]
+                # Prüfe, ob der Titel wie eine ID aussieht (nur Zahlen)
+                if not result[0].startswith("Karte ") and not result[0].isdigit():
+                    return result[0]
             
             # 3. Versuche die Karte direkt aus Anki zu holen
             if hasattr(mw, 'col') and mw.col:
@@ -1584,13 +1821,36 @@ class ValidationCodeHandler:
                 except Exception as e:
                     print(f"Fehler beim direkten Abrufen des Kartentitels: {e}")
             
-            # 4. Formatierter Fallback mit Karten-ID
+            # 4. Versuche den Kartentitel unabhängig vom Deck zu finden
+            try:
+                cursor = self.db.conn.execute("""
+                    SELECT card_title FROM validation_codes 
+                    WHERE card_id = ? AND card_title IS NOT NULL AND card_title != '' AND card_title NOT LIKE 'Karte %'
+                    LIMIT 1
+                """, (str(card_id),))
+                result = cursor.fetchone()
+                if result and result[0]:
+                    return result[0]
+                    
+                cursor = self.db.conn.execute("""
+                    SELECT card_title FROM chat_links 
+                    WHERE card_id = ? AND card_title IS NOT NULL AND card_title != '' AND card_title NOT LIKE 'Karte %'
+                    LIMIT 1
+                """, (str(card_id),))
+                result = cursor.fetchone()
+                if result and result[0]:
+                    return result[0]
+            except Exception as e:
+                print(f"Fehler bei der unabhängigen Titelsuche: {e}")
+            
+            # 5. Formatierter Fallback mit Karten-ID für verschobene Karten
             short_id = str(card_id)[-8:] if len(str(card_id)) > 8 else str(card_id)
-            return f"Karte {short_id}"
+            return f"Karte #{short_id} (verschoben/archiviert)"
             
         except Exception as e:
             print(f"Fehler beim Abrufen des Kartentitels: {e}")
-            return f"Karte {str(card_id)[-8:]}"  # Zeige letzten 8 Ziffern der ID
+            short_id = str(card_id)[-8:] if len(str(card_id)) > 8 else str(card_id)
+            return f"Karte #{short_id} (verschoben/archiviert)"
     
     def parse_code(self, code):
         """Parst einen Validierungscode in seine Komponenten mit verbesserter Robustheit"""
@@ -4365,8 +4625,17 @@ class ReportGenerator:
             progress.setWindowModality(get_qt_enum(Qt.WindowModality, "WindowModal"))
             progress.setValue(0)
             progress.show()
+            progress.setValue(3)
+            progress.setLabelText("Synchronisiere Kartendaten...")
             QApplication.processEvents()
             
+            try:
+                # Verwende die neue Vorbereitungsfunktion
+                self.db.prepare_for_report(deck_id, start_date, end_date)
+            except Exception as e:
+                print(f"Study Tracker: Fehler bei der Berichtsvorbereitung: {e}")
+                traceback.print_exc()
+
             # Validiere Daten
             progress.setValue(5)
             progress.setLabelText("Validiere Daten...")
@@ -5369,6 +5638,19 @@ class HeatmapWidget(QWidget):
                 print(f"Study Tracker: Fehler bei der Aktualisierung des Level-Systems: {e}")
                 traceback.print_exc()
             
+            # NEU: Synchronisiere Karten mit aktuellen Stapeln
+            progress.setValue(5.5)
+            progress.setLabelText("Synchronisiere Karten mit aktuellen Stapeln...")
+            QApplication.processEvents()
+
+            try:
+                print("Study Tracker: Synchronisiere Karten mit aktuellen Stapeln...")
+                self.db.efficient_card_tracking()
+                self.db.update_all_validation_code_links()
+            except Exception as e:
+                print(f"Study Tracker: Fehler bei der Kartensynchronisierung: {e}")
+                traceback.print_exc()
+
             # 6. Fehlerhafte Level-Datensätze bereinigen
             progress.setValue(6)
             progress.setLabelText("Bereinige fehlerhafte Level-Datensätze...")
